@@ -1,0 +1,52 @@
+services:
+  gitea:
+    image: gitea/gitea:latest
+    container_name: rockopera-gitea
+    environment:
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__ROOT_URL=${GITEA_ROOT_URL:-http://localhost:3001}
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__service__DISABLE_REGISTRATION=${GITEA_DISABLE_REGISTRATION:-false}
+    volumes:
+      - gitea-data:/data
+    ports:
+      - "${GITEA_PORT:-3001}:3000"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: rockopera-backend
+    env_file: .env
+    volumes:
+      - ./workflow:/app/workflow:ro
+      - workspaces:/app/workspaces
+      - logs:/app/log
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"
+    depends_on:
+      - gitea
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/api/v1/state"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: rockopera-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  workspaces:
+  logs:
+  gitea-data:
