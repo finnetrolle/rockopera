@@ -75,8 +75,9 @@ object PromptBuilder {
         prContext: PrContext? = null
     ): String {
         val effectiveTemplate = when {
-            templateText.isNotBlank() -> templateText
+            templateText.isNotBlank() && (prContext == null || templateText.contains("{{ pr.")) -> templateText
             prContext != null -> DEFAULT_REVIEW_TEMPLATE
+            templateText.isNotBlank() -> templateText
             else -> DEFAULT_TEMPLATE
         }
 

@@ -225,22 +225,36 @@ class AgentRunner(
                 val verdict = review?.verdict ?: parseVerdict(stdout)
                 log.info("Verdict for issue {}: {}", issue.identifier, verdict)
 
+                // If no structured review, create one from the plain text result
+                val effectiveReview = review ?: StructuredReview(verdict, resultText.ifBlank { "Review completed." }, emptyList())
+
                 // Post structured review on PR via Gitea Reviews API
                 if (prContext != null) {
                     onEvent(statusEvent("Posting review on PR..."))
-                    // If no structured review, create one from the plain text result
-                    val effectiveReview = review ?: StructuredReview(verdict, resultText.ifBlank { "Review completed." }, emptyList())
                     submitGiteaReview(prContext.number, verdict, effectiveReview, resultText)
                 }
 
                 val nextLabel = if (verdict == Verdict.APPROVED) phase.onApproved else phase.onChangesRequested
-                val msg = if (verdict == Verdict.APPROVED) {
-                    "${phase.name} completed: APPROVED."
-                } else {
-                    "${phase.name} completed: CHANGES REQUESTED."
+                val verdictLabel = if (verdict == Verdict.APPROVED) "APPROVED" else "CHANGES REQUESTED"
+                val statusMsg = "${phase.name} completed: $verdictLabel."
+                onEvent(statusEvent(statusMsg))
+
+                // Build detailed issue comment with review findings
+                val commentBuilder = StringBuilder()
+                commentBuilder.append("**Code Review: $verdictLabel**")
+                prContext?.let { commentBuilder.append(" (PR #${it.number})") }
+                commentBuilder.append("\n")
+
+                if (effectiveReview.summary.isNotBlank()) {
+                    commentBuilder.append("\n${effectiveReview.summary}\n")
                 }
-                onEvent(statusEvent(msg))
-                commentOnIssue(issue, msg + prContext?.let { " (PR #${it.number})" }.orEmpty())
+                if (effectiveReview.comments.isNotEmpty()) {
+                    commentBuilder.append("\n**Inline comments:**\n")
+                    for (c in effectiveReview.comments) {
+                        commentBuilder.append("- `${c.path}:${c.line}` — ${c.body}\n")
+                    }
+                }
+                commentOnIssue(issue, commentBuilder.toString())
                 addLabel(issue, nextLabel)
 
                 onEvent(AgentEvent(
