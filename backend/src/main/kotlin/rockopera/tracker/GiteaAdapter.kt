@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import rockopera.config.WorkflowConfig
 import rockopera.model.BlockerRef
 import rockopera.model.Issue
+import rockopera.model.IssueComment
 import java.time.Instant
 
 /**
@@ -72,6 +73,20 @@ class GiteaAdapter(
         val numbers = issueIds.mapNotNull { it.toLongOrNull() }
         val raw = client.getIssuesByNumbers(owner, repo, numbers).getOrThrow()
         raw.mapNotNull { normalizeIssue(it) }
+    }
+
+    override suspend fun fetchIssueComments(issueId: String): Result<List<IssueComment>> = runCatching {
+        val number = issueId.toLongOrNull()
+            ?: throw GiteaApiException("invalid_issue_id", "Issue ID must be a number for Gitea, got: $issueId")
+        val result = client.apiCall("GET", "/api/v1/repos/$owner/$repo/issues/$number/comments")
+        val commentsArray = result.getOrThrow().jsonArray
+        commentsArray.mapNotNull { el ->
+            val obj = el.jsonObject
+            val body = obj.str("body") ?: return@mapNotNull null
+            val author = obj["user"]?.jsonObject?.str("login") ?: "unknown"
+            val createdAt = obj.str("created_at")?.let { parseInstant(it) }
+            IssueComment(author = author, body = body, createdAt = createdAt)
+        }
     }
 
     private fun filterByState(issues: List<Issue>, stateNames: List<String>): List<Issue> {

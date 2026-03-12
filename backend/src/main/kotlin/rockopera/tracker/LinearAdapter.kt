@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import rockopera.config.WorkflowConfig
 import rockopera.model.BlockerRef
 import rockopera.model.Issue
+import rockopera.model.IssueComment
 import java.time.Instant
 
 class LinearAdapter(
@@ -44,6 +45,37 @@ class LinearAdapter(
     override suspend fun fetchIssueStatesByIds(issueIds: List<String>): Result<List<Issue>> {
         return client.fetchIssuesByIds(issueIds)
             .map { nodes -> nodes.mapNotNull { normalizeIssue(it) } }
+    }
+
+    override suspend fun fetchIssueComments(issueId: String): Result<List<IssueComment>> = runCatching {
+        val query = """
+            query IssueComments(${'$'}issueId: String!) {
+                issue(id: ${'$'}issueId) {
+                    comments(first: 50) {
+                        nodes {
+                            body
+                            user { displayName }
+                            createdAt
+                        }
+                    }
+                }
+            }
+        """.trimIndent()
+        val variables = buildJsonObject { put("issueId", issueId) }
+        val response = client.executeRawQuery(query, variables).getOrThrow()
+        val nodes = response.jsonObject["data"]
+            ?.jsonObject?.get("issue")
+            ?.jsonObject?.get("comments")
+            ?.jsonObject?.get("nodes")
+            ?.jsonArray ?: return@runCatching emptyList()
+
+        nodes.mapNotNull { el ->
+            val obj = el.jsonObject
+            val body = obj.str("body") ?: return@mapNotNull null
+            val author = obj["user"]?.jsonObject?.str("displayName") ?: "unknown"
+            val createdAt = obj.str("createdAt")?.let { parseInstant(it) }
+            IssueComment(author = author, body = body, createdAt = createdAt)
+        }
     }
 
     private suspend fun filterByAssignee(issues: List<Issue>): List<Issue> {

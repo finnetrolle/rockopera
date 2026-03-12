@@ -5,7 +5,9 @@ import org.slf4j.LoggerFactory
 import rockopera.config.PhaseConfig
 import rockopera.config.WorkflowConfig
 import rockopera.model.Issue
+import rockopera.model.IssueComment
 import rockopera.tracker.GiteaClient
+import rockopera.tracker.TrackerAdapter
 import rockopera.workspace.WorkspaceManager
 import java.io.File
 import java.nio.file.Path
@@ -25,7 +27,8 @@ data class ShellResult(val success: Boolean, val output: String, val exitCode: I
 class AgentRunner(
     private val config: WorkflowConfig,
     private val workspaceManager: WorkspaceManager,
-    private val giteaClient: GiteaClient? = null
+    private val giteaClient: GiteaClient? = null,
+    private val trackerAdapter: TrackerAdapter? = null
 ) {
     private val log = LoggerFactory.getLogger(AgentRunner::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -95,17 +98,32 @@ class AgentRunner(
                 runShellCommand(workspace.path,
                     "git checkout $branchName 2>/dev/null || git checkout -b $branchName origin/$branchName")
             } else if (phase.createsPr) {
-                // Coding-like phase: fresh branch from default
+                // Coding-like phase
                 if (workspace.createdNow) {
                     onEvent(statusEvent("Cloning repository..."))
                     gitClone(workspace.path, issue)
                 } else {
                     onEvent(statusEvent("Updating repository..."))
-                    val defaultBranch = getDefaultBranch()
-                    runShellCommand(workspace.path, "git fetch origin && git reset --hard origin/$defaultBranch")
+                    runShellCommand(workspace.path, "git fetch origin")
                 }
-                onEvent(statusEvent("Creating branch..."))
-                gitCreateBranch(workspace.path, issue)
+                // Check if the issue branch already exists on remote (rework after review)
+                val branchName = "rockopera/issue-${issue.id}"
+                val remoteBranchCheck = runShellCommand(workspace.path,
+                    "git rev-parse --verify origin/$branchName 2>/dev/null")
+                if (remoteBranchCheck.success) {
+                    // Rework: branch exists from previous coding+review cycle — reuse it
+                    log.info("Reusing existing branch {} for rework", branchName)
+                    onEvent(statusEvent("Resuming work on existing branch..."))
+                    runShellCommand(workspace.path,
+                        "git checkout $branchName 2>/dev/null || git checkout -b $branchName origin/$branchName")
+                    runShellCommand(workspace.path, "git reset --hard origin/$branchName")
+                } else {
+                    // Fresh start: create new branch from default
+                    val defaultBranch = getDefaultBranch()
+                    runShellCommand(workspace.path, "git reset --hard origin/$defaultBranch")
+                    onEvent(statusEvent("Creating branch..."))
+                    gitCreateBranch(workspace.path, issue)
+                }
             }
 
             // Set label on start
@@ -137,10 +155,13 @@ class AgentRunner(
         // 4. Run before_run hook
         workspaceManager.runBeforeRunHook(wsPath)
 
-        // 5. Build prompt and launch agent
+        // 5. Fetch review comments for context (useful when reworking after review)
+        val reviewComments = fetchReviewComments(issue)
+
+        // 6. Build prompt and launch agent
         onEvent(statusEvent("${phase.name} agent is working..."))
         val promptTemplate = phase.promptTemplate ?: config.promptTemplate
-        val prompt = PromptBuilder.render(promptTemplate, issue, attempt, prContext)
+        val prompt = PromptBuilder.render(promptTemplate, issue, attempt, prContext, reviewComments)
         val agentEnv = buildAgentEnv(issue, phase, prContext)
         val command = phase.command ?: config.agentCommand
 
@@ -684,6 +705,25 @@ class AgentRunner(
 
     private fun shellQuote(s: String): String {
         return "'" + s.replace("'", "'\\''") + "'"
+    }
+
+    // --- Review comments ---
+
+    private suspend fun fetchReviewComments(issue: Issue): List<IssueComment> {
+        if (trackerAdapter == null) return issue.comments
+        return try {
+            val comments = trackerAdapter.fetchIssueComments(issue.id).getOrElse {
+                log.warn("Failed to fetch comments for issue {}: {}", issue.identifier, it.message)
+                return issue.comments
+            }
+            if (comments.isNotEmpty()) {
+                log.info("Fetched {} comments for issue {}", comments.size, issue.identifier)
+            }
+            comments
+        } catch (e: Exception) {
+            log.warn("Error fetching comments for issue {}: {}", issue.identifier, e.message)
+            issue.comments
+        }
     }
 
     // --- Agent environment ---

@@ -2,6 +2,7 @@ package rockopera.agent
 
 import liqp.TemplateParser
 import rockopera.model.Issue
+import rockopera.model.IssueComment
 
 object PromptBuilder {
 
@@ -16,6 +17,17 @@ object PromptBuilder {
         {{ issue.description }}
         {% else %}
         No description provided.
+        {% endif %}
+        {% if review_comments.size > 0 %}
+
+        Previous review feedback:
+        {% for comment in review_comments %}
+        ---
+        [{{ comment.author }}{% if comment.createdAt %} at {{ comment.createdAt }}{% endif %}]:
+        {{ comment.body }}
+        {% endfor %}
+        ---
+        IMPORTANT: Address all the review feedback above in your implementation.
         {% endif %}
     """.trimIndent()
 
@@ -72,7 +84,8 @@ object PromptBuilder {
         templateText: String,
         issue: Issue,
         attempt: Int?,
-        prContext: PrContext? = null
+        prContext: PrContext? = null,
+        reviewComments: List<IssueComment> = emptyList()
     ): String {
         val effectiveTemplate = when {
             templateText.isNotBlank() && (prContext == null || templateText.contains("{{ pr.")) -> templateText
@@ -103,8 +116,16 @@ object PromptBuilder {
             "updatedAt" to issue.updatedAt?.toString()
         )
 
+        val commentMaps = reviewComments.map { comment ->
+            mapOf(
+                "author" to comment.author,
+                "body" to comment.body,
+                "createdAt" to (comment.createdAt?.toString() ?: "")
+            )
+        }
+
         val parser = TemplateParser.Builder()
-            .withStrictVariables(true)
+            .withStrictVariables(false)
             .build()
 
         val template = parser.parse(effectiveTemplate)
@@ -113,7 +134,8 @@ object PromptBuilder {
         // Use `false` as falsy sentinel so {% if attempt %} works correctly.
         val context = mutableMapOf<String, Any>(
             "issue" to issueMap,
-            "attempt" to (attempt ?: false)
+            "attempt" to (attempt ?: false),
+            "review_comments" to commentMaps
         )
 
         if (prContext != null) {

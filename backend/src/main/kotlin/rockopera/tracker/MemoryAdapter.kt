@@ -1,13 +1,19 @@
 package rockopera.tracker
 
 import rockopera.model.Issue
+import rockopera.model.IssueComment
 
 class MemoryAdapter(
-    private val issues: MutableList<Issue> = mutableListOf()
+    private val issues: MutableList<Issue> = mutableListOf(),
+    private val commentsByIssueId: MutableMap<String, MutableList<IssueComment>> = mutableMapOf()
 ) : TrackerAdapter {
 
     fun addIssue(issue: Issue) {
         issues.add(issue)
+    }
+
+    fun addComment(issueId: String, comment: IssueComment) {
+        commentsByIssueId.getOrPut(issueId) { mutableListOf() }.add(comment)
     }
 
     fun updateIssueState(issueId: String, state: String) {
@@ -27,4 +33,7 @@ class MemoryAdapter(
 
     override suspend fun fetchIssueStatesByIds(issueIds: List<String>): Result<List<Issue>> =
         Result.success(issues.filter { it.id in issueIds })
+
+    override suspend fun fetchIssueComments(issueId: String): Result<List<IssueComment>> =
+        Result.success(commentsByIssueId[issueId]?.toList() ?: emptyList())
 }

@@ -20,7 +20,16 @@ data class Issue(
     @Serializable(with = InstantSerializer::class)
     val createdAt: Instant? = null,
     @Serializable(with = InstantSerializer::class)
-    val updatedAt: Instant? = null
+    val updatedAt: Instant? = null,
+    val comments: List<IssueComment> = emptyList()
+)
+
+@Serializable
+data class IssueComment(
+    val author: String,
+    val body: String,
+    @Serializable(with = InstantSerializer::class)
+    val createdAt: Instant? = null
 )
 
 @Serializable

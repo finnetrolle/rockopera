@@ -79,7 +79,8 @@ fun main(args: Array<String>) {
         // Agent runner provider — CLI-based agent with optional Gitea integration
         val agentRunnerProvider: (WorkflowConfig) -> AgentRunner = { config ->
             val wsManager = WorkspaceManager(config)
-            AgentRunner(config, wsManager, giteaClient)
+            val tracker = trackerProvider()
+            AgentRunner(config, wsManager, giteaClient, tracker)
         }
 
         // Start Orchestrator
