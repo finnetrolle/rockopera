@@ -23,6 +23,7 @@ data class RunningSnapshot(
     val issueId: String,
     val issueIdentifier: String,
     val state: String,
+    val projectSlug: String = "",
     val sessionId: String?,
     val turnCount: Int,
     val lastEvent: String?,
@@ -38,6 +39,7 @@ data class RunningSnapshot(
 data class RetrySnapshot(
     val issueId: String,
     val issueIdentifier: String,
+    val projectSlug: String = "",
     val attempt: Int,
     val dueAt: String,
     val error: String?

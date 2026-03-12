@@ -10,6 +10,7 @@ data class RunningEntry(
     val issueId: String,
     val state: String,
     val startedAt: Instant,
+    val projectSlug: String = "",
     var sessionId: String? = null,
     var agentPid: String? = null,
     var lastAgentMessage: Any? = null,

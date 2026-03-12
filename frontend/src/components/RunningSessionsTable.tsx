@@ -58,6 +58,7 @@ export function RunningSessionsTable({ sessions }: Props) {
         {sessions.map(s => (
           <div className="session-card" key={s.issue_id}>
             <div className="session-card-header">
+              {s.project_slug && <span className="badge badge-neutral">{s.project_slug}</span>}
               <a href={`/api/v1/${s.issue_identifier}`} className="issue-id">{s.issue_identifier}</a>
               <span className={`badge ${stateBadgeClass(s.state)}`}>{s.state}</span>
               <span className="meta">

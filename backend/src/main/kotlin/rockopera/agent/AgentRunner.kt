@@ -33,14 +33,35 @@ class AgentRunner(
     private val log = LoggerFactory.getLogger(AgentRunner::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val owner: String
-    private val repo: String
+    /**
+     * Extract the Gitea issue number from a composite issue ID.
+     * Composite format: "owner/repo#number" → returns "number"
+     * Legacy format: plain number → returns as-is
+     */
+    private fun issueNumber(issue: Issue): String {
+        val id = issue.id
+        val hashIdx = id.lastIndexOf('#')
+        return if (hashIdx >= 0) id.substring(hashIdx + 1) else id
+    }
 
-    init {
+    /**
+     * Get owner for the issue's repository.
+     * Uses issue.repoOwner if set, otherwise falls back to config.trackerProjectSlug.
+     */
+    private fun ownerOf(issue: Issue): String {
+        if (issue.repoOwner.isNotBlank()) return issue.repoOwner
         val slug = config.trackerProjectSlug ?: ""
-        val parts = slug.split("/", limit = 2)
-        owner = parts.getOrElse(0) { "" }
-        repo = parts.getOrElse(1) { "" }
+        return slug.split("/", limit = 2).getOrElse(0) { "" }
+    }
+
+    /**
+     * Get repo name for the issue's repository.
+     * Uses issue.repoName if set, otherwise falls back to config.trackerProjectSlug.
+     */
+    private fun repoOf(issue: Issue): String {
+        if (issue.repoName.isNotBlank()) return issue.repoName
+        val slug = config.trackerProjectSlug ?: ""
+        return slug.split("/", limit = 2).getOrElse(1) { "" }
     }
 
     suspend fun run(
@@ -94,7 +115,7 @@ class AgentRunner(
                     onEvent(statusEvent("Updating repository for ${phase.name}..."))
                     runShellCommand(workspace.path, "git fetch origin")
                 }
-                val branchName = "rockopera/issue-${issue.id}"
+                val branchName = "rockopera/issue-${issueNumber(issue)}"
                 runShellCommand(workspace.path,
                     "git checkout $branchName 2>/dev/null || git checkout -b $branchName origin/$branchName")
             } else if (phase.createsPr) {
@@ -107,7 +128,7 @@ class AgentRunner(
                     runShellCommand(workspace.path, "git fetch origin")
                 }
                 // Check if the issue branch already exists on remote (rework after review)
-                val branchName = "rockopera/issue-${issue.id}"
+                val branchName = "rockopera/issue-${issueNumber(issue)}"
                 val remoteBranchCheck = runShellCommand(workspace.path,
                     "git rev-parse --verify origin/$branchName 2>/dev/null")
                 if (remoteBranchCheck.success) {
@@ -119,7 +140,7 @@ class AgentRunner(
                     runShellCommand(workspace.path, "git reset --hard origin/$branchName")
                 } else {
                     // Fresh start: create new branch from default
-                    val defaultBranch = getDefaultBranch()
+                    val defaultBranch = getDefaultBranch(issue)
                     runShellCommand(workspace.path, "git reset --hard origin/$defaultBranch")
                     onEvent(statusEvent("Creating branch..."))
                     gitCreateBranch(workspace.path, issue)
@@ -147,7 +168,7 @@ class AgentRunner(
             }
             val prNumber = pr["number"]?.jsonPrimitive?.longOrNull ?: return
             val prTitle = pr["title"]?.jsonPrimitive?.contentOrNull ?: ""
-            val diff = fetchPrDiff(prNumber)
+            val diff = fetchPrDiff(issue, prNumber)
             prContext = PrContext(number = prNumber, title = prTitle, diff = diff)
             log.info("Found PR #{} for issue {}", prNumber, issue.identifier)
         }
@@ -227,7 +248,7 @@ class AgentRunner(
                     gitCommitAndPush(workspace.path, issue)
 
                     onEvent(statusEvent("Creating pull request..."))
-                    val branchName = "rockopera/issue-${issue.id}"
+                    val branchName = "rockopera/issue-${issueNumber(issue)}"
                     createPullRequest(issue, branchName)
                 }
             }
@@ -252,7 +273,7 @@ class AgentRunner(
                 // Post structured review on PR via Gitea Reviews API
                 if (prContext != null) {
                     onEvent(statusEvent("Posting review on PR..."))
-                    submitGiteaReview(prContext.number, verdict, effectiveReview, resultText)
+                    submitGiteaReview(issue, prContext.number, verdict, effectiveReview, resultText)
                 }
 
                 val nextLabel = if (verdict == Verdict.APPROVED) phase.onApproved else phase.onChangesRequested
@@ -354,6 +375,8 @@ class AgentRunner(
     // --- Git operations (shell commands) ---
 
     private fun gitClone(workDir: String, issue: Issue) {
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         val host = config.trackerEndpoint.removePrefix("http://").removePrefix("https://")
         val cloneUrl = "http://rockopera:${config.trackerApiKey}@$host/$owner/$repo.git"
         val result = runShellCommand(workDir, "git clone $cloneUrl .")
@@ -371,7 +394,7 @@ class AgentRunner(
     }
 
     private fun gitCreateBranch(workDir: String, issue: Issue) {
-        val branchName = "rockopera/issue-${issue.id}"
+        val branchName = "rockopera/issue-${issueNumber(issue)}"
         val checkoutResult = runShellCommand(workDir, "git checkout $branchName 2>/dev/null || git checkout -b $branchName")
         if (!checkoutResult.success) {
             log.warn("Failed to create/checkout branch {}: {}", branchName, checkoutResult.output)
@@ -412,8 +435,10 @@ class AgentRunner(
 
     // --- Gitea API operations ---
 
-    private suspend fun getDefaultBranch(): String {
+    private suspend fun getDefaultBranch(issue: Issue): String {
         if (giteaClient == null) return "main"
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         return try {
             val result = giteaClient.apiCall("GET", "/api/v1/repos/$owner/$repo")
             val repoObj = result.getOrNull()?.jsonObject
@@ -426,13 +451,16 @@ class AgentRunner(
 
     private suspend fun addLabel(issue: Issue, labelName: String) {
         if (giteaClient == null) return
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
+        val number = issueNumber(issue)
         try {
-            val labelId = findOrCreateLabel(labelName)
+            val labelId = findOrCreateLabel(issue, labelName)
             if (labelId != null) {
                 val body = buildJsonObject {
                     putJsonArray("labels") { add(labelId) }
                 }.toString()
-                giteaClient.apiCall("POST", "/api/v1/repos/$owner/$repo/issues/${issue.id}/labels", body)
+                giteaClient.apiCall("POST", "/api/v1/repos/$owner/$repo/issues/$number/labels", body)
             }
         } catch (e: Exception) {
             log.warn("Failed to add label '{}' to issue {}: {}", labelName, issue.identifier, e.message)
@@ -441,21 +469,26 @@ class AgentRunner(
 
     private suspend fun removeLabel(issue: Issue, labelName: String) {
         if (giteaClient == null) return
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
+        val number = issueNumber(issue)
         try {
-            val labelId = findLabelId(labelName)
+            val labelId = findLabelId(issue, labelName)
             if (labelId != null) {
-                giteaClient.apiCall("DELETE", "/api/v1/repos/$owner/$repo/issues/${issue.id}/labels/$labelId")
+                giteaClient.apiCall("DELETE", "/api/v1/repos/$owner/$repo/issues/$number/labels/$labelId")
             }
         } catch (e: Exception) {
             log.warn("Failed to remove label '{}' from issue {}: {}", labelName, issue.identifier, e.message)
         }
     }
 
-    private suspend fun findOrCreateLabel(labelName: String): Long? {
+    private suspend fun findOrCreateLabel(issue: Issue, labelName: String): Long? {
         if (giteaClient == null) return null
-        val existingId = findLabelId(labelName)
+        val existingId = findLabelId(issue, labelName)
         if (existingId != null) return existingId
 
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         val body = buildJsonObject {
             put("name", labelName)
             put("color", "#0075ca")
@@ -465,8 +498,10 @@ class AgentRunner(
         return created?.get("id")?.jsonPrimitive?.longOrNull
     }
 
-    private suspend fun findLabelId(labelName: String): Long? {
+    private suspend fun findLabelId(issue: Issue, labelName: String): Long? {
         if (giteaClient == null) return null
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         val result = giteaClient.apiCall("GET", "/api/v1/repos/$owner/$repo/labels")
         val labels = result.getOrNull()?.jsonArray ?: return null
         for (label in labels) {
@@ -481,8 +516,10 @@ class AgentRunner(
 
     private suspend fun createPullRequest(issue: Issue, branchName: String) {
         if (giteaClient == null) return
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         try {
-            val defaultBranch = getDefaultBranch()
+            val defaultBranch = getDefaultBranch(issue)
             val body = buildJsonObject {
                 put("title", "[${issue.identifier}] ${issue.title}")
                 put("body", "Automated PR for issue ${issue.identifier}.\n\nCreated by RockOpera agent.")
@@ -497,11 +534,14 @@ class AgentRunner(
 
     private suspend fun commentOnIssue(issue: Issue, message: String) {
         if (giteaClient == null) return
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
+        val number = issueNumber(issue)
         try {
             val body = buildJsonObject {
                 put("body", message)
             }.toString()
-            giteaClient.apiCall("POST", "/api/v1/repos/$owner/$repo/issues/${issue.id}/comments", body)
+            giteaClient.apiCall("POST", "/api/v1/repos/$owner/$repo/issues/$number/comments", body)
         } catch (e: Exception) {
             log.warn("Failed to comment on issue {}: {}", issue.identifier, e.message)
         }
@@ -511,27 +551,33 @@ class AgentRunner(
 
     private suspend fun findPrForIssue(issue: Issue): JsonObject? {
         if (giteaClient == null) return null
-        val branchName = "rockopera/issue-${issue.id}"
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
+        val branchName = "rockopera/issue-${issueNumber(issue)}"
         val result = giteaClient.apiCall("GET",
             "/api/v1/repos/$owner/$repo/pulls?state=open&head=$owner:$branchName")
         val pulls = result.getOrNull()?.jsonArray ?: return null
         return pulls.firstOrNull()?.jsonObject
     }
 
-    private suspend fun fetchPrDiff(prNumber: Long): String {
+    private suspend fun fetchPrDiff(issue: Issue, prNumber: Long): String {
         if (giteaClient == null) return ""
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         return try {
             val result = giteaClient.apiCall("GET",
                 "/api/v1/repos/$owner/$repo/pulls/$prNumber.diff")
-            result.getOrNull()?.jsonPrimitive?.contentOrNull ?: fetchPrDiffViaFiles(prNumber)
+            result.getOrNull()?.jsonPrimitive?.contentOrNull ?: fetchPrDiffViaFiles(issue, prNumber)
         } catch (e: Exception) {
             log.warn("Failed to fetch PR diff directly, falling back to files endpoint: {}", e.message)
-            fetchPrDiffViaFiles(prNumber)
+            fetchPrDiffViaFiles(issue, prNumber)
         }
     }
 
-    private suspend fun fetchPrDiffViaFiles(prNumber: Long): String {
+    private suspend fun fetchPrDiffViaFiles(issue: Issue, prNumber: Long): String {
         if (giteaClient == null) return ""
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
         return try {
             val result = giteaClient.apiCall("GET",
                 "/api/v1/repos/$owner/$repo/pulls/$prNumber/files")
@@ -626,12 +672,15 @@ class AgentRunner(
     }
 
     private suspend fun submitGiteaReview(
+        issue: Issue,
         prNumber: Long,
         verdict: Verdict,
         review: StructuredReview?,
         fallbackText: String
     ) {
         if (giteaClient == null) return
+        val owner = ownerOf(issue)
+        val repo = repoOf(issue)
 
         val summary = review?.summary ?: fallbackText.take(5000)
         val event = if (verdict == Verdict.APPROVED) "APPROVED" else "REQUEST_CHANGES"

@@ -21,7 +21,11 @@ data class Issue(
     val createdAt: Instant? = null,
     @Serializable(with = InstantSerializer::class)
     val updatedAt: Instant? = null,
-    val comments: List<IssueComment> = emptyList()
+    val comments: List<IssueComment> = emptyList(),
+    /** "owner/repo" slug identifying which project this issue belongs to */
+    val projectSlug: String = "",
+    val repoOwner: String = "",
+    val repoName: String = ""
 )
 
 @Serializable

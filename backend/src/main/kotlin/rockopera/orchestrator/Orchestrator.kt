@@ -148,7 +148,8 @@ class Orchestrator(
             issue = issue,
             issueId = issue.id,
             state = issue.state,
-            startedAt = Instant.now()
+            startedAt = Instant.now(),
+            projectSlug = issue.projectSlug
         )
         state.claimed.add(issue.id)
         cancelExistingRetry(issue.id)
@@ -206,13 +207,13 @@ class Orchestrator(
         accumulateTokenDeltas(entry)
 
         if (msg.result.isSuccess) {
-            scheduleRetry(msg.issueId, entry.identifier, 1, 1_000, null)
+            scheduleRetry(msg.issueId, entry.identifier, 1, 1_000, null, entry.projectSlug)
         } else {
             val existingAttempt = state.retryAttempts[msg.issueId]?.attempt ?: 0
             val nextAttempt = existingAttempt + 1
             val delay = computeBackoff(nextAttempt)
             val error = msg.result.exceptionOrNull()?.message
-            scheduleRetry(msg.issueId, entry.identifier, nextAttempt, delay, error)
+            scheduleRetry(msg.issueId, entry.identifier, nextAttempt, delay, error, entry.projectSlug)
         }
     }
 
@@ -311,7 +312,7 @@ class Orchestrator(
                         dispatchIssue(issue, config, retryEntry.attempt)
                     } else {
                         scheduleRetry(msg.issueId, retryEntry.identifier, retryEntry.attempt,
-                            computeBackoff(retryEntry.attempt), "no available orchestrator slots")
+                            computeBackoff(retryEntry.attempt), "no available orchestrator slots", retryEntry.projectSlug)
                     }
                 } else {
                     log.info("Issue {} no longer eligible, releasing claim", retryEntry.identifier)
@@ -324,7 +325,7 @@ class Orchestrator(
         }
     }
 
-    private fun scheduleRetry(issueId: String, identifier: String, attempt: Int, delayMs: Long, error: String?) {
+    private fun scheduleRetry(issueId: String, identifier: String, attempt: Int, delayMs: Long, error: String?, projectSlug: String = "") {
         cancelExistingRetry(issueId)
         val dueAtMs = System.currentTimeMillis() + delayMs
 
@@ -335,6 +336,7 @@ class Orchestrator(
         state.retryAttempts[issueId] = RetryEntry(
             issueId = issueId,
             identifier = identifier,
+            projectSlug = projectSlug,
             attempt = attempt,
             dueAtMs = dueAtMs,
             timerHandle = timerHandle,
@@ -379,7 +381,7 @@ class Orchestrator(
                 state.running.remove(issueId)
                 val attempt = state.retryAttempts[issueId]?.attempt ?: 0
                 scheduleRetry(issueId, entry.identifier, attempt + 1,
-                    computeBackoff(attempt + 1), "stalled: no activity for ${config.agentStallTimeoutMs}ms")
+                    computeBackoff(attempt + 1), "stalled: no activity for ${config.agentStallTimeoutMs}ms", entry.projectSlug)
             }
         }
 
@@ -483,6 +485,7 @@ class Orchestrator(
                 issueId = id,
                 issueIdentifier = entry.identifier,
                 state = entry.state,
+                projectSlug = entry.projectSlug,
                 sessionId = entry.sessionId,
                 turnCount = entry.turnCount,
                 lastEvent = entry.lastAgentEvent,
@@ -500,6 +503,7 @@ class Orchestrator(
             id to RetrySnapshot(
                 issueId = id,
                 issueIdentifier = entry.identifier,
+                projectSlug = entry.projectSlug,
                 attempt = entry.attempt,
                 dueAt = Instant.ofEpochMilli(entry.dueAtMs).toString(),
                 error = entry.error
@@ -530,7 +534,9 @@ class Orchestrator(
             return "Unsupported tracker kind: ${config.trackerKind}"
         if (config.trackerApiKey.isNullOrBlank() && config.trackerKind in listOf("linear", "gitea"))
             return "Missing tracker API key"
-        if (config.trackerProjectSlug.isNullOrBlank() && config.trackerKind in listOf("linear", "gitea"))
+        if (config.trackerKind == "gitea" && config.effectiveProjects().isEmpty())
+            return "Missing tracker projects (set tracker.projects or tracker.project_slug)"
+        if (config.trackerProjectSlug.isNullOrBlank() && config.trackerKind == "linear")
             return "Missing tracker project slug"
         if (config.agentCommand.isBlank())
             return "Missing agent command"
@@ -562,7 +568,8 @@ class Orchestrator(
             issue = issue,
             issueId = this.issueId,
             state = state,
-            startedAt = this.startedAt
+            startedAt = this.startedAt,
+            projectSlug = this.projectSlug
         )
         new.sessionId = this.sessionId
         new.agentPid = this.agentPid

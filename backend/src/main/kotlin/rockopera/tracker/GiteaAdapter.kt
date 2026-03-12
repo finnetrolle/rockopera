@@ -2,6 +2,7 @@ package rockopera.tracker
 
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
+import rockopera.config.ProjectConfig
 import rockopera.config.WorkflowConfig
 import rockopera.model.BlockerRef
 import rockopera.model.Issue
@@ -9,7 +10,7 @@ import rockopera.model.IssueComment
 import java.time.Instant
 
 /**
- * Gitea issue tracker adapter.
+ * Gitea issue tracker adapter with multi-repository support.
  *
  * Gitea issues don't have built-in "states" like Linear. Instead, we use:
  * - Open/Closed as the base state
@@ -20,7 +21,8 @@ import java.time.Instant
  * - `terminal_states` labels OR closed issues → terminal
  * - Issue `state` field = first matching active/terminal label, or "open"/"closed"
  *
- * The `tracker.project_slug` format is "owner/repo" (e.g., "rockopera/myproject").
+ * Supports multiple projects via `tracker.projects` list in config.
+ * Falls back to single `tracker.project_slug` for backward compatibility.
  */
 class GiteaAdapter(
     private val config: WorkflowConfig,
@@ -28,57 +30,88 @@ class GiteaAdapter(
 ) : TrackerAdapter {
     private val log = LoggerFactory.getLogger(GiteaAdapter::class.java)
 
-    private val owner: String
-    private val repo: String
+    private val projects: List<ProjectConfig> = config.effectiveProjects().also {
+        if (it.isEmpty()) {
+            throw GiteaApiException(
+                "missing_gitea_project",
+                "tracker.projects or tracker.project_slug is required (format: owner/repo)"
+            )
+        }
+    }
 
     private var resolvedAssigneeLogin: String? = null
 
-    init {
-        val slug = config.trackerProjectSlug
-            ?: throw GiteaApiException("missing_gitea_project", "tracker.project_slug is required (format: owner/repo)")
-        val parts = slug.split("/", limit = 2)
-        require(parts.size == 2) { "tracker.project_slug must be in 'owner/repo' format, got: $slug" }
-        owner = parts[0]
-        repo = parts[1]
-    }
-
     override suspend fun fetchCandidateIssues(): Result<List<Issue>> = runCatching {
-        val rawIssues = client.listIssues(owner, repo, state = "open").getOrThrow()
-        val issues = rawIssues.mapNotNull { normalizeIssue(it) }
-        val filtered = filterByState(issues, config.activeStates)
-        filterByAssignee(filtered)
+        val allIssues = mutableListOf<Issue>()
+        for (project in projects) {
+            val effectiveConfig = config.effectiveConfigForProject(project)
+            val rawIssues = client.listIssues(project.owner, project.repo, state = "open").getOrThrow()
+            val issues = rawIssues.mapNotNull { normalizeIssue(it, project, effectiveConfig) }
+            val filtered = filterByState(issues, effectiveConfig.activeStates)
+            allIssues.addAll(filtered)
+        }
+        filterByAssignee(allIssues)
     }
 
     override suspend fun fetchIssuesByStates(stateNames: List<String>): Result<List<Issue>> = runCatching {
-        // For terminal states, we also need closed issues
         val normalizedNames = stateNames.map { it.trim().lowercase() }
         val needsClosed = normalizedNames.any { it == "closed" }
 
         val allIssues = mutableListOf<Issue>()
 
-        // Fetch open issues and filter by label
-        val openRaw = client.listIssues(owner, repo, state = "open").getOrThrow()
-        allIssues.addAll(openRaw.mapNotNull { normalizeIssue(it) })
+        for (project in projects) {
+            val effectiveConfig = config.effectiveConfigForProject(project)
 
-        // Also fetch closed if any terminal state is "closed"
-        if (needsClosed) {
-            val closedRaw = client.listIssues(owner, repo, state = "closed").getOrThrow()
-            allIssues.addAll(closedRaw.mapNotNull { normalizeIssue(it) })
+            // Fetch open issues and filter by label
+            val openRaw = client.listIssues(project.owner, project.repo, state = "open").getOrThrow()
+            allIssues.addAll(openRaw.mapNotNull { normalizeIssue(it, project, effectiveConfig) })
+
+            // Also fetch closed if any terminal state is "closed"
+            if (needsClosed) {
+                val closedRaw = client.listIssues(project.owner, project.repo, state = "closed").getOrThrow()
+                allIssues.addAll(closedRaw.mapNotNull { normalizeIssue(it, project, effectiveConfig) })
+            }
         }
 
         filterByState(allIssues, stateNames)
     }
 
     override suspend fun fetchIssueStatesByIds(issueIds: List<String>): Result<List<Issue>> = runCatching {
-        val numbers = issueIds.mapNotNull { it.toLongOrNull() }
-        val raw = client.getIssuesByNumbers(owner, repo, numbers).getOrThrow()
-        raw.mapNotNull { normalizeIssue(it) }
+        val allIssues = mutableListOf<Issue>()
+
+        // Group issue IDs by project slug: "owner/repo#number" -> (project, number)
+        val grouped = issueIds.mapNotNull { compositeId ->
+            val parsed = parseCompositeId(compositeId)
+            if (parsed != null) parsed else {
+                // Legacy format: plain number — try all projects
+                val number = compositeId.toLongOrNull()
+                if (number != null && projects.size == 1) {
+                    Triple(projects[0], projects[0].slug, number)
+                } else null
+            }
+        }.groupBy({ it.second }, { it.third })
+
+        for ((slug, numbers) in grouped) {
+            val project = projects.find { it.slug == slug } ?: continue
+            val effectiveConfig = config.effectiveConfigForProject(project)
+            val raw = client.getIssuesByNumbers(project.owner, project.repo, numbers).getOrThrow()
+            allIssues.addAll(raw.mapNotNull { normalizeIssue(it, project, effectiveConfig) })
+        }
+
+        allIssues
     }
 
     override suspend fun fetchIssueComments(issueId: String): Result<List<IssueComment>> = runCatching {
-        val number = issueId.toLongOrNull()
-            ?: throw GiteaApiException("invalid_issue_id", "Issue ID must be a number for Gitea, got: $issueId")
-        val result = client.apiCall("GET", "/api/v1/repos/$owner/$repo/issues/$number/comments")
+        val parsed = parseCompositeId(issueId)
+        val (project, _, number) = if (parsed != null) parsed else {
+            // Legacy format
+            val num = issueId.toLongOrNull()
+                ?: throw GiteaApiException("invalid_issue_id", "Issue ID must be in 'owner/repo#number' format, got: $issueId")
+            if (projects.size == 1) Triple(projects[0], projects[0].slug, num)
+            else throw GiteaApiException("ambiguous_issue_id", "Cannot resolve plain issue number '$issueId' with multiple projects")
+        }
+
+        val result = client.apiCall("GET", "/api/v1/repos/${project.owner}/${project.repo}/issues/$number/comments")
         val commentsArray = result.getOrThrow().jsonArray
         commentsArray.mapNotNull { el ->
             val obj = el.jsonObject
@@ -87,6 +120,19 @@ class GiteaAdapter(
             val createdAt = obj.str("created_at")?.let { parseInstant(it) }
             IssueComment(author = author, body = body, createdAt = createdAt)
         }
+    }
+
+    /**
+     * Parse a composite issue ID in "owner/repo#number" format.
+     * Returns Triple(ProjectConfig, slug, number) or null if format doesn't match.
+     */
+    private fun parseCompositeId(compositeId: String): Triple<ProjectConfig, String, Long>? {
+        val hashIdx = compositeId.lastIndexOf('#')
+        if (hashIdx <= 0) return null
+        val slug = compositeId.substring(0, hashIdx)
+        val number = compositeId.substring(hashIdx + 1).toLongOrNull() ?: return null
+        val project = projects.find { it.slug == slug } ?: return null
+        return Triple(project, slug, number)
     }
 
     private fun filterByState(issues: List<Issue>, stateNames: List<String>): List<Issue> {
@@ -127,23 +173,30 @@ class GiteaAdapter(
      * - Look at labels for active/terminal state names
      * - If closed → "closed"
      * - If no matching label → "open" (for open issues)
+     *
+     * Issue ID format: "owner/repo#number" (globally unique across repos)
+     * Issue identifier format: "owner/repo#number"
      */
-    private fun normalizeIssue(node: JsonObject): Issue? {
-        val id = node["number"]?.jsonPrimitive?.longOrNull?.toString() ?: return null
+    private fun normalizeIssue(
+        node: JsonObject,
+        project: ProjectConfig,
+        effectiveConfig: WorkflowConfig
+    ): Issue? {
+        val number = node["number"]?.jsonPrimitive?.longOrNull ?: return null
         val title = node.str("title") ?: return null
         val giteaState = node.str("state") ?: "open" // "open" or "closed"
 
-        // Build identifier as "owner/repo#number"
-        val number = node["number"]?.jsonPrimitive?.long ?: return null
-        val identifier = "#$number"
+        // Globally unique composite ID and human-readable identifier
+        val id = "${project.slug}#$number"
+        val identifier = "${project.slug}#$number"
 
         // Extract labels
         val labelsArray = node["labels"]?.jsonArray ?: JsonArray(emptyList())
         val labelNames = labelsArray.mapNotNull { it.jsonObject.str("name")?.lowercase() }
 
-        // Determine workflow state from labels
-        val activeNorm = config.activeStates.map { it.trim().lowercase() }
-        val terminalNorm = config.terminalStates.map { it.trim().lowercase() }
+        // Determine workflow state from labels using effective (per-project) config
+        val activeNorm = effectiveConfig.activeStates.map { it.trim().lowercase() }
+        val terminalNorm = effectiveConfig.terminalStates.map { it.trim().lowercase() }
 
         val state = when {
             giteaState == "closed" -> "closed"
@@ -194,7 +247,10 @@ class GiteaAdapter(
             blockedBy = blockedBy,
             assignedToWorker = true,
             createdAt = node.str("created_at")?.let { parseInstant(it) },
-            updatedAt = node.str("updated_at")?.let { parseInstant(it) }
+            updatedAt = node.str("updated_at")?.let { parseInstant(it) },
+            projectSlug = project.slug,
+            repoOwner = project.owner,
+            repoName = project.repo
         )
     }
 

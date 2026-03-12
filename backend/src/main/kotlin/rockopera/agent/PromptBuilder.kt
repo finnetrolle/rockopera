@@ -113,7 +113,10 @@ object PromptBuilder {
                 )
             },
             "createdAt" to issue.createdAt?.toString(),
-            "updatedAt" to issue.updatedAt?.toString()
+            "updatedAt" to issue.updatedAt?.toString(),
+            "projectSlug" to issue.projectSlug,
+            "repoOwner" to issue.repoOwner,
+            "repoName" to issue.repoName
         )
 
         val commentMaps = reviewComments.map { comment ->

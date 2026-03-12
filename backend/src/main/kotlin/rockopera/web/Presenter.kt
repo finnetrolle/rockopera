@@ -74,6 +74,7 @@ object Presenter {
         put("issue_id", entry.issueId)
         put("issue_identifier", entry.issueIdentifier)
         put("state", entry.state)
+        put("project_slug", entry.projectSlug)
         put("session_id", entry.sessionId)
         put("turn_count", entry.turnCount)
         put("last_event", entry.lastEvent)
@@ -93,6 +94,7 @@ object Presenter {
     private fun retryToJson(entry: RetrySnapshot): JsonObject = buildJsonObject {
         put("issue_id", entry.issueId)
         put("issue_identifier", entry.issueIdentifier)
+        put("project_slug", entry.projectSlug)
         put("attempt", entry.attempt)
         put("due_at", entry.dueAt)
         put("error", entry.error)

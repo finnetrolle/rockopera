@@ -12,6 +12,7 @@ export interface RunningSession {
   issue_id: string
   issue_identifier: string
   state: string
+  project_slug: string
   session_id: string | null
   turn_count: number
   last_event: string | null
@@ -25,6 +26,7 @@ export interface RunningSession {
 export interface RetryEntry {
   issue_id: string
   issue_identifier: string
+  project_slug: string
   attempt: number
   due_at: string
   error: string | null

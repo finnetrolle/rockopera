@@ -66,6 +66,7 @@ object WorkflowLoader {
         val defaultTerminalStates = if (isGitea) listOf("done", "closed") else listOf("Closed", "Cancelled", "Canceled", "Duplicate", "Done")
 
         val phases = parsePhases(cfg)
+        val projects = parseProjects(tracker)
 
         return WorkflowConfig(
             trackerKind = kind,
@@ -75,6 +76,7 @@ object WorkflowLoader {
             trackerAssignee = tracker.getString("assignee")?.let { resolveEnv(it) },
             activeStates = tracker.getStringList("active_states") ?: defaultActiveStates,
             terminalStates = tracker.getStringList("terminal_states") ?: defaultTerminalStates,
+            projects = projects,
             pollingIntervalMs = polling.getLong("interval_ms") ?: 30_000,
             workspaceRoot = workspace.getString("root")?.let { expandPath(resolveEnv(it)) },
             hookAfterCreate = hooks.getString("after_create"),
@@ -98,6 +100,37 @@ object WorkflowLoader {
             serverHost = server.getString("host") ?: "127.0.0.1",
             promptTemplate = definition.promptTemplate
         )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun parseProjects(tracker: Map<String, Any?>): List<ProjectConfig> {
+        val projectsList = tracker["projects"] as? List<*> ?: return emptyList()
+        return projectsList.mapNotNull { item ->
+            val projectMap = item as? Map<String, Any?> ?: return@mapNotNull null
+            val slug = projectMap.getString("slug") ?: return@mapNotNull null
+            val parts = slug.split("/", limit = 2)
+            if (parts.size != 2) {
+                log.warn("Invalid project slug '{}', expected 'owner/repo' format", slug)
+                return@mapNotNull null
+            }
+            val projectHooks = projectMap.getMap("hooks")
+            val projectPhases = if (projectMap.containsKey("phases")) {
+                parsePhases(projectMap)
+            } else null
+            ProjectConfig(
+                slug = slug,
+                owner = parts[0],
+                repo = parts[1],
+                hookAfterCreate = projectHooks.getString("after_create"),
+                hookBeforeRun = projectHooks.getString("before_run"),
+                hookAfterRun = projectHooks.getString("after_run"),
+                hookBeforeRemove = projectHooks.getString("before_remove"),
+                promptTemplate = projectMap.getString("prompt_template"),
+                activeStates = projectMap.getStringList("active_states"),
+                terminalStates = projectMap.getStringList("terminal_states"),
+                phases = projectPhases
+            )
+        }
     }
 
     @Suppress("UNCHECKED_CAST")

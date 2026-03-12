@@ -3,7 +3,10 @@ tracker:
   kind: gitea
   endpoint: $GITEA_URL
   api_key: $GITEA_TOKEN
-  project_slug: $GITEA_PROJECT_SLUG
+  # Single repo (legacy): project_slug: $GITEA_PROJECT_SLUG
+  # Multi-repo: use 'projects' list instead of 'project_slug'
+  projects:
+    - slug: $GITEA_PROJECT_SLUG
   assignee: $TRACKER_ASSIGNEE
   active_states: [open, todo, in-progress, review]
   terminal_states: [done, closed]

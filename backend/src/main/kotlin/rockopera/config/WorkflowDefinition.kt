@@ -20,6 +20,25 @@ data class PhaseConfig(
     val labelOnStart: String? = null
 )
 
+/**
+ * Per-project configuration. Each project represents a single owner/repo
+ * on the same Gitea instance. Fields that are null fall back to the
+ * base WorkflowConfig values.
+ */
+data class ProjectConfig(
+    val slug: String,
+    val owner: String,
+    val repo: String,
+    val hookAfterCreate: String? = null,
+    val hookBeforeRun: String? = null,
+    val hookAfterRun: String? = null,
+    val hookBeforeRemove: String? = null,
+    val promptTemplate: String? = null,
+    val activeStates: List<String>? = null,
+    val terminalStates: List<String>? = null,
+    val phases: List<PhaseConfig>? = null
+)
+
 data class WorkflowConfig(
     // Tracker
     val trackerKind: String = "linear",
@@ -29,6 +48,9 @@ data class WorkflowConfig(
     val trackerAssignee: String? = null,
     val activeStates: List<String> = listOf("Todo", "In Progress"),
     val terminalStates: List<String> = listOf("Closed", "Cancelled", "Canceled", "Duplicate", "Done"),
+
+    // Multi-repo projects (Gitea only)
+    val projects: List<ProjectConfig> = emptyList(),
 
     // Polling
     val pollingIntervalMs: Long = 30_000,
@@ -66,4 +88,32 @@ data class WorkflowConfig(
 
     // Prompt
     val promptTemplate: String = ""
-)
+) {
+    /**
+     * Returns the effective list of projects. If [projects] is non-empty, returns it.
+     * Otherwise, falls back to the legacy single [trackerProjectSlug].
+     */
+    fun effectiveProjects(): List<ProjectConfig> {
+        if (projects.isNotEmpty()) return projects
+        val slug = trackerProjectSlug ?: return emptyList()
+        val parts = slug.split("/", limit = 2)
+        if (parts.size != 2) return emptyList()
+        return listOf(ProjectConfig(slug = slug, owner = parts[0], repo = parts[1]))
+    }
+
+    /**
+     * Returns a WorkflowConfig with per-project overrides applied.
+     * Hook, prompt, phase, and state overrides from the project take precedence.
+     */
+    fun effectiveConfigForProject(project: ProjectConfig): WorkflowConfig = copy(
+        trackerProjectSlug = project.slug,
+        hookAfterCreate = project.hookAfterCreate ?: hookAfterCreate,
+        hookBeforeRun = project.hookBeforeRun ?: hookBeforeRun,
+        hookAfterRun = project.hookAfterRun ?: hookAfterRun,
+        hookBeforeRemove = project.hookBeforeRemove ?: hookBeforeRemove,
+        promptTemplate = project.promptTemplate ?: promptTemplate,
+        activeStates = project.activeStates ?: activeStates,
+        terminalStates = project.terminalStates ?: terminalStates,
+        phases = project.phases ?: phases
+    )
+}
