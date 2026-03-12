@@ -49,3 +49,14 @@ No description provided.
 {% if attempt %}
 This is retry attempt #{{ attempt }}.
 {% endif %}
+{% if review_comments.size > 0 %}
+
+Previous review feedback that MUST be addressed:
+{% for comment in review_comments %}
+---
+[{{ comment.author }}{% if comment.createdAt %} at {{ comment.createdAt }}{% endif %}]:
+{{ comment.body }}
+{% endfor %}
+---
+IMPORTANT: You MUST fix ALL the issues mentioned in the review feedback above. Edit the files to address each comment. Do NOT just read files — make the actual changes.
+{% endif %}

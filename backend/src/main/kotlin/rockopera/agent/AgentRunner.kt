@@ -133,11 +133,15 @@ class AgentRunner(
                     "git rev-parse --verify origin/$branchName 2>/dev/null")
                 if (remoteBranchCheck.success) {
                     // Rework: branch exists from previous coding+review cycle — reuse it
-                    log.info("Reusing existing branch {} for rework", branchName)
+                    log.info("REWORK: Reusing existing branch {} for issue {}", branchName, issue.identifier)
                     onEvent(statusEvent("Resuming work on existing branch..."))
-                    runShellCommand(workspace.path,
+                    val checkoutRes = runShellCommand(workspace.path,
                         "git checkout $branchName 2>/dev/null || git checkout -b $branchName origin/$branchName")
-                    runShellCommand(workspace.path, "git reset --hard origin/$branchName")
+                    log.info("REWORK: checkout result: success={}, output={}", checkoutRes.success, checkoutRes.output.take(200))
+                    val resetRes = runShellCommand(workspace.path, "git reset --hard origin/$branchName")
+                    log.info("REWORK: reset --hard result: success={}, output={}", resetRes.success, resetRes.output.take(200))
+                    val headAfterReset = runShellCommand(workspace.path, "git rev-parse HEAD").output.trim()
+                    log.info("REWORK: HEAD after reset: {}", headAfterReset.take(12))
                 } else {
                     // Fresh start: create new branch from default
                     val defaultBranch = getDefaultBranch(issue)
@@ -239,17 +243,89 @@ class AgentRunner(
         onEvent: suspend (AgentEvent) -> Unit,
         pid: String
     ) {
+        // Log agent output summary for all phases
+        val agentLines = stdout.lines()
+        val agentJsonLines = agentLines.filter { it.isNotBlank() && it.trimStart().startsWith("{") }
+        val agentEventTypes = agentJsonLines.mapNotNull { line ->
+            try { json.parseToJsonElement(line).jsonObject["type"]?.jsonPrimitive?.contentOrNull } catch (_: Exception) { null }
+        }
+        log.info("AGENT-OUTPUT: phase={}, stdout_length={}, lines={}, json_lines={}, event_types={}",
+            phase.name, stdout.length, agentLines.size, agentJsonLines.size, agentEventTypes)
+
+        // Log result text from agent
+        val agentResultText = extractAgentResultText(stdout)
+        if (agentResultText.isNotBlank()) {
+            log.info("AGENT-OUTPUT: result text preview ({}ch): {}", agentResultText.length, agentResultText.take(1000))
+        } else {
+            log.warn("AGENT-OUTPUT: no result text found. Raw stdout preview: {}", stdout.take(1500))
+        }
+
+        // Log tool usage (edits, writes, bash commands)
+        val toolUses = agentJsonLines.mapNotNull { line ->
+            try {
+                val obj = json.parseToJsonElement(line).jsonObject
+                if (obj["type"]?.jsonPrimitive?.contentOrNull == "assistant") {
+                    val content = obj["message"]?.jsonObject?.get("content")?.jsonArray
+                    content?.filter { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "tool_use" }
+                        ?.map { it.jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: "unknown" }
+                } else null
+            } catch (_: Exception) { null }
+        }.flatten()
+        if (toolUses.isNotEmpty()) {
+            log.info("AGENT-OUTPUT: tools used: {}", toolUses)
+        } else {
+            log.warn("AGENT-OUTPUT: agent used NO tools during phase '{}'", phase.name)
+        }
+
         if (giteaClient != null) {
-            // PR creation for coding-like phases
+            // PR creation/update for coding-like phases
             if (phase.createsPr) {
                 val workspace = workspaceManager.createOrReuse(issue.identifier)
-                if (gitHasChanges(workspace.path)) {
-                    onEvent(statusEvent("Committing changes..."))
-                    gitCommitAndPush(workspace.path, issue)
 
-                    onEvent(statusEvent("Creating pull request..."))
+                // Detailed state logging for debugging rework issues
+                val currentBranchLog = runShellCommand(workspace.path, "git rev-parse --abbrev-ref HEAD").output.trim()
+                val headLog = runShellCommand(workspace.path, "git rev-parse HEAD").output.trim()
+                val statusLog = runShellCommand(workspace.path, "git status --porcelain").output.trim()
+                val remoteHeadLog = runShellCommand(workspace.path, "git rev-parse origin/$currentBranchLog 2>/dev/null")
+                val aheadLog = runShellCommand(workspace.path, "git rev-list origin/$currentBranchLog..HEAD --count 2>/dev/null")
+                log.info("POST-AGENT state: branch={}, HEAD={}, remoteHEAD={}, ahead={}, uncommitted_files={}",
+                    currentBranchLog, headLog.take(12),
+                    if (remoteHeadLog.success) remoteHeadLog.output.trim().take(12) else "N/A",
+                    if (aheadLog.success) aheadLog.output.trim() else "N/A",
+                    statusLog.lines().filter { it.isNotBlank() }.size)
+                if (statusLog.isNotBlank()) {
+                    log.info("POST-AGENT uncommitted changes:\n{}", statusLog.take(500))
+                }
+
+                if (gitHasChanges(workspace.path)) {
+                    log.info("POST-AGENT: changes detected, proceeding to commit and push")
+                    onEvent(statusEvent("Committing changes..."))
+                    val pushed = gitCommitAndPush(workspace.path, issue)
+
                     val branchName = "rockopera/issue-${issueNumber(issue)}"
-                    createPullRequest(issue, branchName)
+                    val existingPr = findPrForIssue(issue)
+                    if (existingPr != null) {
+                        val prNumber = existingPr["number"]?.jsonPrimitive?.longOrNull
+                        if (pushed) {
+                            log.info("PR #{} updated with new commit for branch {}", prNumber, branchName)
+                            onEvent(statusEvent("PR #$prNumber updated with new changes."))
+                        } else {
+                            log.warn("PR #{} exists but no new changes were pushed for branch {}. " +
+                                "Agent may not have made any modifications during rework.", prNumber, branchName)
+                            onEvent(statusEvent("PR #$prNumber exists but no new changes to push."))
+                        }
+                    } else {
+                        if (pushed) {
+                            onEvent(statusEvent("Creating pull request..."))
+                            createPullRequest(issue, branchName)
+                        } else {
+                            log.warn("No PR found and no changes pushed for branch {}", branchName)
+                        }
+                    }
+                } else {
+                    log.warn("POST-AGENT: NO changes detected after agent run for issue {}. " +
+                        "The agent may not have made any modifications.", issue.identifier)
+                    onEvent(statusEvent("No changes detected after agent run."))
                 }
             }
 
@@ -402,20 +478,61 @@ class AgentRunner(
     }
 
     private fun gitHasChanges(workDir: String): Boolean {
+        // Check 1: uncommitted changes in working tree
         val status = runShellCommand(workDir, "git status --porcelain")
-        if (status.success && status.output.isNotBlank()) return true
+        val hasUncommitted = status.success && status.output.isNotBlank()
+        log.info("HAS-CHANGES check 1 (uncommitted): {}, files={}", hasUncommitted,
+            if (hasUncommitted) status.output.lines().filter { it.isNotBlank() }.size else 0)
+        if (hasUncommitted) return true
+
+        // Check 2: local commits that differ from the remote tracking branch
+        // This catches cases where the agent committed changes itself
+        val currentBranch = runShellCommand(workDir, "git rev-parse --abbrev-ref HEAD")
+        if (currentBranch.success) {
+            val branch = currentBranch.output.trim()
+            val remoteDiff = runShellCommand(workDir, "git diff --stat origin/$branch HEAD 2>/dev/null")
+            val hasDiff = remoteDiff.success && remoteDiff.output.isNotBlank()
+            log.info("HAS-CHANGES check 2a (diff vs remote): {}", hasDiff)
+            if (hasDiff) return true
+            // Also check if there are new local commits not on remote
+            val ahead = runShellCommand(workDir, "git rev-list origin/$branch..HEAD --count 2>/dev/null")
+            val aheadCount = if (ahead.success) ahead.output.trim().toIntOrNull() ?: 0 else 0
+            log.info("HAS-CHANGES check 2b (ahead of remote): commits={}", aheadCount)
+            if (aheadCount > 0) return true
+        }
+
+        // Check 3: branch differs from default branch (main/master)
         val defaultBranch = runShellCommand(workDir, "git rev-parse --verify origin/main 2>/dev/null || git rev-parse --verify origin/master 2>/dev/null")
         if (defaultBranch.success) {
             val baseRef = defaultBranch.output.trim()
             val diff = runShellCommand(workDir, "git diff --stat $baseRef HEAD")
-            return diff.success && diff.output.isNotBlank()
+            val diffFromDefault = diff.success && diff.output.isNotBlank()
+            log.info("HAS-CHANGES check 3 (diff vs default branch): {}", diffFromDefault)
+            return diffFromDefault
         }
+        log.warn("HAS-CHANGES: all checks failed, reporting no changes")
         return false
     }
 
-    private fun gitCommitAndPush(workDir: String, issue: Issue) {
+    /**
+     * Commit any uncommitted changes and push to remote.
+     * Uses --force-with-lease to handle cases where the agent amended commits.
+     * Returns true if new changes were actually pushed, false if nothing to push.
+     */
+    private fun gitCommitAndPush(workDir: String, issue: Issue): Boolean {
+        // Record the remote HEAD before push to detect if we actually pushed something
+        val currentBranch = runShellCommand(workDir, "git rev-parse --abbrev-ref HEAD").output.trim()
+        val remoteHeadBefore = runShellCommand(workDir, "git rev-parse origin/$currentBranch 2>/dev/null")
+            .let { if (it.success) it.output.trim() else null }
+        val localHeadBefore = runShellCommand(workDir, "git rev-parse HEAD").output.trim()
+        log.info("COMMIT-PUSH: branch={}, localHEAD={}, remoteHEAD={}",
+            currentBranch, localHeadBefore.take(12), (remoteHeadBefore ?: "none").take(12))
+
+        // Commit uncommitted changes if any
         val status = runShellCommand(workDir, "git status --porcelain")
+        log.info("COMMIT-PUSH: uncommitted files count={}", status.output.lines().filter { it.isNotBlank() }.size)
         if (status.success && status.output.isNotBlank()) {
+            log.info("COMMIT-PUSH: staging and committing uncommitted changes")
             val commitMsg = "[${issue.identifier}] ${issue.title}"
             val commitResult = runShellCommand(
                 workDir,
@@ -423,14 +540,46 @@ class AgentRunner(
                 timeoutMs = 60_000
             )
             if (!commitResult.success) {
-                log.warn("git commit failed (agent may have committed already): {}", commitResult.output.take(200))
+                log.warn("COMMIT-PUSH: git commit failed (agent may have committed already): {}", commitResult.output.take(200))
+            } else {
+                log.info("COMMIT-PUSH: commit succeeded: {}", commitResult.output.take(200))
             }
+        } else {
+            log.info("COMMIT-PUSH: no uncommitted changes, checking for agent-made commits")
         }
-        val pushResult = runShellCommand(workDir, "git push -u origin HEAD", timeoutMs = 120_000)
+
+        val localHeadAfter = runShellCommand(workDir, "git rev-parse HEAD").output.trim()
+        log.info("COMMIT-PUSH: localHEAD after commit={}", localHeadAfter.take(12))
+
+        // Check if there's anything new to push
+        if (remoteHeadBefore != null && localHeadAfter == remoteHeadBefore) {
+            log.info("COMMIT-PUSH: NOTHING TO PUSH — HEAD {} matches remote. Agent made no changes.", localHeadAfter.take(12))
+            return false
+        }
+        log.info("COMMIT-PUSH: will push, local differs from remote ({} vs {})",
+            localHeadAfter.take(12), (remoteHeadBefore ?: "none").take(12))
+
+        // Use --force-with-lease to handle cases where the agent amended commits
+        // This is safe: it only force-pushes if the remote hasn't been updated by someone else
+        val pushResult = runShellCommand(workDir, "git push --force-with-lease -u origin HEAD", timeoutMs = 120_000)
         if (!pushResult.success) {
-            log.error("git push failed: {}", pushResult.output)
-            throw RuntimeException("git push failed: ${pushResult.output.take(500)}")
+            // Fallback to regular push in case --force-with-lease is not supported
+            log.warn("COMMIT-PUSH: force-with-lease push failed, trying regular push: {}", pushResult.output.take(200))
+            val regularPush = runShellCommand(workDir, "git push -u origin HEAD", timeoutMs = 120_000)
+            if (!regularPush.success) {
+                log.error("COMMIT-PUSH: git push FAILED: {}", regularPush.output)
+                throw RuntimeException("git push failed: ${regularPush.output.take(500)}")
+            }
+            log.info("COMMIT-PUSH: regular push succeeded")
+        } else {
+            log.info("COMMIT-PUSH: force-with-lease push succeeded: {}", pushResult.output.take(200))
         }
+
+        // Verify remote was updated
+        val remoteHeadAfterPush = runShellCommand(workDir, "git rev-parse origin/$currentBranch 2>/dev/null")
+        log.info("COMMIT-PUSH: PUSHED OK. remote HEAD after push: {}",
+            if (remoteHeadAfterPush.success) remoteHeadAfterPush.output.trim().take(12) else "unknown")
+        return true
     }
 
     // --- Gitea API operations ---
@@ -739,6 +888,7 @@ class AgentRunner(
     // --- Shell command helper ---
 
     private fun runShellCommand(workDir: String, cmd: String, timeoutMs: Long = 60_000): ShellResult {
+        log.debug("SHELL> [{}] {}", workDir.substringAfterLast('/'), cmd)
         val process = ProcessBuilder("sh", "-c", cmd)
             .directory(File(workDir))
             .redirectErrorStream(true)
@@ -746,10 +896,20 @@ class AgentRunner(
         val completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
         if (!completed) {
             process.destroyForcibly()
+            log.warn("SHELL> TIMEOUT after {}ms: {}", timeoutMs, cmd)
             return ShellResult(false, "timeout", -1)
         }
         val output = process.inputStream.bufferedReader().readText()
-        return ShellResult(process.exitValue() == 0, output, process.exitValue())
+        val result = ShellResult(process.exitValue() == 0, output, process.exitValue())
+        if (cmd.startsWith("git ")) {
+            if (result.success) {
+                log.info("GIT> {} → OK{}", cmd,
+                    if (result.output.isNotBlank()) " | ${result.output.trim().take(300)}" else "")
+            } else {
+                log.warn("GIT> {} → FAILED (exit={}) | {}", cmd, result.exitCode, result.output.trim().take(300))
+            }
+        }
+        return result
     }
 
     private fun shellQuote(s: String): String {

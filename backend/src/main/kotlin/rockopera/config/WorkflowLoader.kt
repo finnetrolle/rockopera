@@ -107,7 +107,8 @@ object WorkflowLoader {
         val projectsList = tracker["projects"] as? List<*> ?: return emptyList()
         return projectsList.mapNotNull { item ->
             val projectMap = item as? Map<String, Any?> ?: return@mapNotNull null
-            val slug = projectMap.getString("slug") ?: return@mapNotNull null
+            val rawSlug = projectMap.getString("slug") ?: return@mapNotNull null
+            val slug = resolveEnv(rawSlug)
             val parts = slug.split("/", limit = 2)
             if (parts.size != 2) {
                 log.warn("Invalid project slug '{}', expected 'owner/repo' format", slug)
