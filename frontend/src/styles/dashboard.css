@@ -145,19 +145,40 @@ a:hover { text-decoration: underline; }
   list-style: none;
   font-size: 13px;
   font-family: monospace;
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.activity-log::-webkit-scrollbar {
+  width: 6px;
+}
+.activity-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+.activity-log::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
 }
 
 .activity-log li {
   padding: 3px 0;
   color: var(--text-muted);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  word-break: break-word;
 }
 
 .activity-log li:last-child {
   color: var(--text);
   font-weight: 500;
+}
+
+.activity-log .dot {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .step-done { color: var(--green); }

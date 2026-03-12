@@ -770,18 +770,133 @@ class AgentRunner(
                 ),
                 usage = usage
             )
-            "assistant" -> AgentEvent(
-                event = "notification",
-                agentPid = pid,
-                payload = mapOf("type" to type),
-                usage = usage
-            )
+            "assistant" -> {
+                val summary = extractAssistantSummary(obj)
+                if (summary != null) {
+                    AgentEvent(
+                        event = "status",
+                        agentPid = pid,
+                        payload = mapOf("type" to type, "message" to summary),
+                        usage = usage
+                    )
+                } else {
+                    AgentEvent(
+                        event = "notification",
+                        agentPid = pid,
+                        payload = mapOf("type" to type),
+                        usage = usage
+                    )
+                }
+            }
             else -> AgentEvent(
                 event = "notification",
                 agentPid = pid,
                 payload = mapOf("type" to type),
                 usage = usage
             )
+        }
+    }
+
+    /**
+     * Extract a human-readable summary from a Claude stream-json "assistant" event.
+     *
+     * Claude's stream-json format emits assistant messages with content blocks:
+     * - tool_use: {"type": "tool_use", "name": "write_to_file", "input": {"path": "src/main.kt", ...}}
+     * - text: {"type": "text", "text": "I'll now implement..."}
+     *
+     * We extract tool names + key parameters and short text snippets to show
+     * what the agent is doing in the activity log.
+     */
+    private fun extractAssistantSummary(obj: JsonObject): String? {
+        val message = obj["message"]?.jsonObject ?: return null
+        val content = message["content"]?.jsonArray ?: return null
+        if (content.isEmpty()) return null
+
+        val parts = mutableListOf<String>()
+
+        for (block in content) {
+            val blockObj = block.jsonObject
+            val blockType = blockObj["type"]?.jsonPrimitive?.contentOrNull ?: continue
+
+            when (blockType) {
+                "tool_use" -> {
+                    val toolName = blockObj["name"]?.jsonPrimitive?.contentOrNull ?: "unknown_tool"
+                    val input = blockObj["input"]?.jsonObject
+                    val detail = extractToolDetail(toolName, input)
+                    parts.add(detail)
+                }
+                "text" -> {
+                    val text = blockObj["text"]?.jsonPrimitive?.contentOrNull ?: continue
+                    // Take first meaningful line as a summary, skip empty/whitespace
+                    val firstLine = text.lines()
+                        .map { it.trim() }
+                        .firstOrNull { it.isNotBlank() && it.length > 3 }
+                    if (firstLine != null) {
+                        val truncated = if (firstLine.length > 120) firstLine.take(117) + "..." else firstLine
+                        parts.add(truncated)
+                    }
+                }
+            }
+        }
+
+        return if (parts.isNotEmpty()) parts.joinToString(" → ") else null
+    }
+
+    /**
+     * Format a tool call into a concise human-readable string.
+     */
+    private fun extractToolDetail(toolName: String, input: JsonObject?): String {
+        if (input == null) return "🔧 $toolName"
+
+        return when (toolName) {
+            "write_to_file", "create_file" -> {
+                val path = input["path"]?.jsonPrimitive?.contentOrNull ?: "?"
+                "📝 Write $path"
+            }
+            "edit_file", "apply_diff" -> {
+                val path = input["path"]?.jsonPrimitive?.contentOrNull
+                    ?: input["file_path"]?.jsonPrimitive?.contentOrNull ?: "?"
+                "✏️ Edit $path"
+            }
+            "read_file" -> {
+                val path = input["path"]?.jsonPrimitive?.contentOrNull
+                    ?: input["files"]?.jsonArray?.firstOrNull()
+                        ?.jsonObject?.get("path")?.jsonPrimitive?.contentOrNull ?: "?"
+                "📖 Read $path"
+            }
+            "list_files" -> {
+                val path = input["path"]?.jsonPrimitive?.contentOrNull ?: "."
+                "📂 List $path"
+            }
+            "search_files", "grep", "ripgrep" -> {
+                val pattern = input["regex"]?.jsonPrimitive?.contentOrNull
+                    ?: input["pattern"]?.jsonPrimitive?.contentOrNull ?: "?"
+                val path = input["path"]?.jsonPrimitive?.contentOrNull ?: ""
+                "🔍 Search ${if (path.isNotBlank()) "$path " else ""}\"$pattern\""
+            }
+            "execute_command", "bash", "shell" -> {
+                val cmd = input["command"]?.jsonPrimitive?.contentOrNull
+                    ?: input["cmd"]?.jsonPrimitive?.contentOrNull ?: "?"
+                val truncated = if (cmd.length > 80) cmd.take(77) + "..." else cmd
+                "⚡ Run: $truncated"
+            }
+            "delete_file" -> {
+                val path = input["path"]?.jsonPrimitive?.contentOrNull ?: "?"
+                "🗑️ Delete $path"
+            }
+            else -> {
+                // Generic tool — show name and first string parameter
+                val firstParam = input.entries.firstOrNull { (_, v) ->
+                    v is JsonPrimitive && v.isString
+                }
+                if (firstParam != null) {
+                    val value = firstParam.value.jsonPrimitive.content
+                    val truncated = if (value.length > 60) value.take(57) + "..." else value
+                    "🔧 $toolName($truncated)"
+                } else {
+                    "🔧 $toolName"
+                }
+            }
         }
     }
 

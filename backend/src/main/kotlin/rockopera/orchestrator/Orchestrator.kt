@@ -230,7 +230,7 @@ class Orchestrator(
             val message = payload["message"]?.toString()
             if (message != null) {
                 entry.activityLog.add(message)
-                while (entry.activityLog.size > 20) entry.activityLog.removeFirst()
+                while (entry.activityLog.size > 50) entry.activityLog.removeFirst()
             }
         }
 
