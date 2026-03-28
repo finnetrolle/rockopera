@@ -11,12 +11,14 @@ import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+import rockopera.config.LlmProfileStore
 import rockopera.orchestrator.Orchestrator
 
 class HttpServer(
     private val host: String,
     private val port: Int,
-    private val orchestrator: Orchestrator
+    private val orchestrator: Orchestrator,
+    private val llmProfileStore: LlmProfileStore
 ) {
     private val log = LoggerFactory.getLogger(HttpServer::class.java)
     private var server: EmbeddedServer<*, *>? = null
@@ -36,7 +38,7 @@ class HttpServer(
             }
             routing {
                 route("/api/v1") {
-                    observabilityApi(orchestrator)
+                    observabilityApi(orchestrator, llmProfileStore)
                 }
                 staticResources("/", "static") {
                     default("index.html")

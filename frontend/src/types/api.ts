@@ -44,3 +44,15 @@ export interface TokenUsage {
   output_tokens: number
   total_tokens: number
 }
+
+export interface LlmProfileSnapshot {
+  active_profile_id: string | null
+  default_profile_id: string | null
+  profiles: LlmProfileSummary[]
+}
+
+export interface LlmProfileSummary {
+  id: string
+  label: string
+  active: boolean
+}

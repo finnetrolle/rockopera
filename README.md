@@ -38,7 +38,9 @@ RockOpera continuously monitors your issue tracker (Gitea or Linear), creates is
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
-- An [Anthropic API key](https://console.anthropic.com/) (for Claude Code agent)
+- One of the following for the Claude Code agent:
+  - an Anthropic-compatible endpoint (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`)
+  - or an OpenAI-like endpoint routed through LiteLLM (`docker compose --profile llm-gateway`)
 
 ### 1. Clone the repository
 
@@ -68,19 +70,48 @@ Edit `.env` and set your values:
 | `BACKEND_PORT` | Backend API port | `4000` |
 | `FRONTEND_PORT` | Dashboard UI port | `3000` |
 
+For predefined UI-switchable profiles, put provider secrets and upstream model IDs in `.env`:
+
+```dotenv
+ANTHROPIC_MODEL=sonnet
+ANTHROPIC_AUTH_TOKEN=your_glm_token
+ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5
+
+GLM_ANTHROPIC_AUTH_TOKEN=your_glm_token
+GLM_ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+GLM_SONNET_MODEL=glm-5
+
+LITELLM_MASTER_KEY=sk-rockopera-local
+OPENAI_LIKE_API_BASE=https://your-openai-like-provider.example/v1
+OPENAI_LIKE_API_KEY=your_provider_key
+OPENAI_LIKE_SONNET_MODEL=openai/gpt-4.1
+OPENAI_LIKE_OPUS_MODEL=openai/o3
+OPENAI_LIKE_HAIKU_MODEL=openai/gpt-4.1-mini
+```
+
+The global `ANTHROPIC_*` variables above remain the startup default for backward compatibility. Then define switchable profiles in `WORKFLOW.md` under `agent.llm_profiles`. The default repository workflow already includes ready-to-switch `glm`, `gpt41`, and `o3` examples.
+
 ### 3. Start all services
 
 ```bash
 docker compose up -d
 ```
 
-This starts three containers:
+If you use an OpenAI-like provider via LiteLLM, start with the gateway profile:
+
+```bash
+docker compose --profile llm-gateway up -d
+```
+
+This starts three containers by default. With the `llm-gateway` profile enabled, it also starts LiteLLM for Claude Code:
 
 | Service | URL | Description |
 |---|---|---|
 | **Gitea** | http://localhost:3001 | Git server + issue tracker |
 | **Backend** | http://localhost:4000 | RockOpera orchestrator API |
 | **Frontend** | http://localhost:3000 | Monitoring dashboard |
+| **LiteLLM** | *(internal only)* | Optional LLM gateway for OpenAI-like providers |
 
 ### 4. Set up Gitea
 
@@ -179,6 +210,74 @@ Identifier: {{ issue.identifier }}
 Title: {{ issue.title }}
 ...
 ```
+
+## Using OpenAI-like model providers
+
+Claude Code does not talk to raw OpenAI Chat Completions endpoints directly. It expects either an Anthropic Messages endpoint (`/v1/messages`), or Bedrock / Vertex equivalents. For OpenAI-like providers, the supported pattern is:
+
+1. Put LiteLLM in front of the provider.
+2. Point Claude Code to LiteLLM with `ANTHROPIC_BASE_URL=http://litellm:4000`.
+3. Map Claude aliases (`sonnet`, `opus`, `haiku`) to LiteLLM model names with `ANTHROPIC_DEFAULT_*_MODEL`.
+
+This repository includes an optional `litellm` Docker Compose profile and [`gateway/start-litellm.sh`](gateway/start-litellm.sh) that generates a minimal LiteLLM config from `.env`.
+
+For the predefined UI-switchable profiles in [`workflow/WORKFLOW.md`](workflow/WORKFLOW.md), the mapping is:
+
+```dotenv
+LITELLM_MASTER_KEY=sk-rockopera-local
+OPENAI_LIKE_API_BASE=https://api.openai-like.example/v1
+OPENAI_LIKE_API_KEY=secret
+OPENAI_LIKE_SONNET_MODEL=openai/gpt-4.1
+OPENAI_LIKE_OPUS_MODEL=openai/o3
+```
+
+Then start:
+
+```bash
+docker compose --profile llm-gateway up -d
+```
+
+The current direct `GLM-5` setup still works unchanged if your proxy already exposes an Anthropic-compatible API.
+
+## Predefined LLM Profiles In UI
+
+The dashboard can switch between predefined profiles without restarting the backend. The intended flow is:
+
+1. Before startup, define provider credentials and upstream models in `.env`.
+2. Before startup, define the actual switchable profiles in `agent.llm_profiles` inside [`workflow/WORKFLOW.md`](workflow/WORKFLOW.md).
+3. Start RockOpera.
+4. In the web UI, use the `LLM Profile` panel to switch the active profile.
+
+Example workflow snippet:
+
+```yaml
+agent:
+  llm_profiles:
+    items:
+      - id: glm
+        label: GLM-5
+        env:
+          ANTHROPIC_MODEL: sonnet
+          ANTHROPIC_AUTH_TOKEN: $GLM_ANTHROPIC_AUTH_TOKEN
+          ANTHROPIC_BASE_URL: $GLM_ANTHROPIC_BASE_URL
+          ANTHROPIC_DEFAULT_SONNET_MODEL: $GLM_SONNET_MODEL
+      - id: gpt41
+        label: GPT-4.1
+        env:
+          ANTHROPIC_MODEL: sonnet
+          ANTHROPIC_AUTH_TOKEN: $LITELLM_MASTER_KEY
+          ANTHROPIC_BASE_URL: http://litellm:4000
+          ANTHROPIC_DEFAULT_SONNET_MODEL: rockopera-sonnet
+      - id: o3
+        label: o3
+        env:
+          ANTHROPIC_MODEL: opus
+          ANTHROPIC_AUTH_TOKEN: $LITELLM_MASTER_KEY
+          ANTHROPIC_BASE_URL: http://litellm:4000
+          ANTHROPIC_DEFAULT_OPUS_MODEL: rockopera-opus
+```
+
+If `agent.llm_profiles.default` is omitted, RockOpera starts on the legacy global `ANTHROPIC_*` environment and keeps backward compatibility with existing single-profile setups. Profile switches apply to new runs only. Agents that are already running keep the profile they started with.
 
 ### Phases
 

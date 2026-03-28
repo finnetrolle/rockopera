@@ -56,6 +56,100 @@ body {
 }
 .error { color: var(--red); }
 
+.llm-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 24px;
+  margin-bottom: 24px;
+}
+
+.llm-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.llm-panel-head h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.llm-panel-head p {
+  color: var(--text-muted);
+  max-width: 720px;
+}
+
+.llm-panel-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 9999px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #b8bcff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.llm-panel-form {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.llm-panel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+  flex: 1;
+}
+
+.llm-panel-field span {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.llm-panel-field select {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.llm-panel-form button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.llm-panel-form button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.llm-panel-error {
+  color: var(--red);
+  margin-top: 12px;
+  font-size: 13px;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -237,4 +331,5 @@ a:hover { text-decoration: underline; }
 @media (max-width: 768px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .hero-card { flex-direction: column; text-align: center; }
+  .llm-panel-head, .llm-panel-form { flex-direction: column; align-items: stretch; }
 }

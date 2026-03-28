@@ -1,18 +1,30 @@
 package rockopera.web
 
 import io.ktor.http.*
+import io.ktor.serialization.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+import rockopera.config.LlmProfileStore
 import rockopera.orchestrator.Orchestrator
 import rockopera.orchestrator.OrchestratorMessage
 import rockopera.orchestrator.OrchestratorSnapshot
 import java.time.Instant
 
-fun Route.observabilityApi(orchestrator: Orchestrator) {
+@Serializable
+data class SetActiveLlmProfileRequest(
+    @kotlinx.serialization.SerialName("profile_id")
+    val profileId: String
+)
+
+fun Route.observabilityApi(
+    orchestrator: Orchestrator,
+    llmProfileStore: LlmProfileStore
+) {
 
     get("/state") {
         val deferred = CompletableDeferred<OrchestratorSnapshot>()
@@ -86,5 +98,44 @@ fun Route.observabilityApi(orchestrator: Orchestrator) {
                 add("reconcile")
             }
         }.toString())
+    }
+
+    get("/llm/profiles") {
+        call.respond(llmProfileStore.snapshot())
+    }
+
+    post("/llm/active") {
+        val request = try {
+            call.receive<SetActiveLlmProfileRequest>()
+        } catch (_: ContentTransformationException) {
+            call.respond(HttpStatusCode.BadRequest, buildJsonObject {
+                putJsonObject("error") {
+                    put("code", "invalid_request")
+                    put("message", "Request body must be valid JSON with profile_id")
+                }
+            }.toString())
+            return@post
+        } catch (_: IllegalArgumentException) {
+            call.respond(HttpStatusCode.BadRequest, buildJsonObject {
+                putJsonObject("error") {
+                    put("code", "invalid_request")
+                    put("message", "Request body must be valid JSON with profile_id")
+                }
+            }.toString())
+            return@post
+        }
+        val snapshot = try {
+            llmProfileStore.setActive(request.profileId)
+        } catch (e: IllegalArgumentException) {
+            call.respond(HttpStatusCode.BadRequest, buildJsonObject {
+                putJsonObject("error") {
+                    put("code", "invalid_profile")
+                    put("message", e.message ?: "Invalid profile")
+                }
+            }.toString())
+            return@post
+        }
+
+        call.respond(snapshot)
     }
 }

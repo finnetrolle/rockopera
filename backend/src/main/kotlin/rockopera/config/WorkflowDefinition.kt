@@ -73,6 +73,8 @@ data class WorkflowConfig(
     val agentCommand: String = "claude -p --verbose --output-format stream-json --dangerously-skip-permissions",
     val agentTurnTimeoutMs: Long = 3_600_000,
     val agentStallTimeoutMs: Long = 300_000,
+    val llmProfiles: List<LlmProfileConfig> = emptyList(),
+    val defaultLlmProfileId: String? = null,
 
     // Phases
     val phases: List<PhaseConfig> = emptyList(),
@@ -117,3 +119,10 @@ data class WorkflowConfig(
         phases = project.phases ?: phases
     )
 }
+
+data class LlmProfileConfig(
+    val id: String,
+    val label: String,
+    val command: String? = null,
+    val env: Map<String, String> = emptyMap()
+)

@@ -46,6 +46,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  litellm:
+    image: ${LITELLM_IMAGE:-docker.litellm.ai/berriai/litellm:main-latest}
+    container_name: rockopera-litellm
+    profiles: ["llm-gateway"]
+    env_file: .env
+    volumes:
+      - ./gateway:/app/gateway:ro
+    command: ["/bin/sh", "/app/gateway/start-litellm.sh"]
+    expose:
+      - "4000"
+    restart: unless-stopped
+
 volumes:
   workspaces:
   logs:

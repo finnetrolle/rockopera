@@ -3,6 +3,7 @@ package rockopera.agent
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
 import rockopera.config.PhaseConfig
+import rockopera.config.LlmProfileConfig
 import rockopera.config.WorkflowConfig
 import rockopera.model.Issue
 import rockopera.model.IssueComment
@@ -28,7 +29,8 @@ class AgentRunner(
     private val config: WorkflowConfig,
     private val workspaceManager: WorkspaceManager,
     private val giteaClient: GiteaClient? = null,
-    private val trackerAdapter: TrackerAdapter? = null
+    private val trackerAdapter: TrackerAdapter? = null,
+    private val activeLlmProfileProvider: () -> LlmProfileConfig? = { null }
 ) {
     private val log = LoggerFactory.getLogger(AgentRunner::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -187,8 +189,9 @@ class AgentRunner(
         onEvent(statusEvent("${phase.name} agent is working..."))
         val promptTemplate = phase.promptTemplate ?: config.promptTemplate
         val prompt = PromptBuilder.render(promptTemplate, issue, attempt, prContext, reviewComments)
-        val agentEnv = buildAgentEnv(issue, phase, prContext)
-        val command = phase.command ?: config.agentCommand
+        val llmProfile = activeLlmProfileProvider()
+        val agentEnv = buildAgentEnv(issue, phase, prContext, llmProfile)
+        val command = resolveAgentCommand(phase, llmProfile)
 
         val client = CliAgentClient(
             command = command,
@@ -940,9 +943,11 @@ class AgentRunner(
     private fun buildAgentEnv(
         issue: Issue,
         phase: PhaseConfig,
-        prContext: PrContext?
+        prContext: PrContext?,
+        llmProfile: LlmProfileConfig?
     ): Map<String, String> {
         return buildMap {
+            putAll(llmProfile?.env.orEmpty())
             put("ROCKOPERA_ISSUE_ID", issue.id)
             put("ROCKOPERA_ISSUE_IDENTIFIER", issue.identifier)
             put("ROCKOPERA_ISSUE_TITLE", issue.title)
@@ -953,6 +958,11 @@ class AgentRunner(
             }
         }
     }
+
+    internal fun resolveAgentCommand(
+        phase: PhaseConfig,
+        llmProfile: LlmProfileConfig?
+    ): String = phase.command ?: llmProfile?.command ?: config.agentCommand
 
     // --- Stream event parsing ---
 

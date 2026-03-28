@@ -1,8 +1,10 @@
 import { useOrchestratorState } from './hooks/useOrchestratorState'
+import { useLlmProfiles } from './hooks/useLlmProfiles'
 import { MetricCard } from './components/MetricCard'
 import { RunningSessionsTable } from './components/RunningSessionsTable'
 import { RetryQueueTable } from './components/RetryQueueTable'
 import { RateLimitsPanel } from './components/RateLimitsPanel'
+import { LlmProfilePanel } from './components/LlmProfilePanel'
 
 function formatRuntime(seconds: number): string {
   const m = Math.floor(seconds / 60)
@@ -12,6 +14,7 @@ function formatRuntime(seconds: number): string {
 
 export default function App() {
   const { data, isLoading, isError } = useOrchestratorState()
+  const llmProfiles = useLlmProfiles()
 
   const isLive = !!data && !data.error
 
@@ -27,6 +30,15 @@ export default function App() {
 
       {isLoading && <p className="loading">Loading...</p>}
       {isError && <p className="error">Failed to connect to orchestrator</p>}
+
+      <LlmProfilePanel
+        data={llmProfiles.data}
+        isLoading={llmProfiles.isLoading}
+        isError={llmProfiles.isError}
+        isSwitching={llmProfiles.isSwitching}
+        errorMessage={llmProfiles.switchError?.message}
+        onSwitch={llmProfiles.switchProfile}
+      />
 
       {data && !data.error && (
         <>

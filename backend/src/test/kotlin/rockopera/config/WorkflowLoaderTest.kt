@@ -127,4 +127,44 @@ class WorkflowLoaderTest {
 
         assertEquals(listOf("Todo", "In Progress", "Review"), cfg.activeStates)
     }
+
+    @Test
+    fun `buildConfig parses llm profiles`() {
+        val config = mapOf(
+            "agent" to mapOf(
+                "llm_profiles" to mapOf(
+                    "default" to "glm",
+                    "items" to listOf(
+                        mapOf(
+                            "id" to "glm",
+                            "label" to "GLM-5",
+                            "env" to mapOf(
+                                "ANTHROPIC_MODEL" to "sonnet",
+                                "ANTHROPIC_DEFAULT_SONNET_MODEL" to "glm-5"
+                            )
+                        ),
+                        mapOf(
+                            "id" to "o3",
+                            "label" to "o3",
+                            "command" to "claude -p --model opus",
+                            "env" to mapOf(
+                                "ANTHROPIC_MODEL" to "opus",
+                                "ANTHROPIC_DEFAULT_OPUS_MODEL" to "rockopera-opus"
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+        val def = WorkflowDefinition(config = config, promptTemplate = "")
+        val cfg = WorkflowLoader.buildConfig(def)
+
+        assertEquals("glm", cfg.defaultLlmProfileId)
+        assertEquals(2, cfg.llmProfiles.size)
+        assertEquals("GLM-5", cfg.llmProfiles[0].label)
+        assertEquals("glm-5", cfg.llmProfiles[0].env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+        assertEquals("claude -p --model opus", cfg.llmProfiles[1].command)
+        assertEquals("opus", cfg.llmProfiles[1].env["ANTHROPIC_MODEL"])
+    }
 }

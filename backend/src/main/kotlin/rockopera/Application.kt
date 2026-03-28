@@ -4,6 +4,7 @@ import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import rockopera.agent.AgentRunner
 import rockopera.cli.Cli
+import rockopera.config.LlmProfileStore
 import rockopera.config.WorkflowConfig
 import rockopera.config.WorkflowStore
 import rockopera.orchestrator.Orchestrator
@@ -77,10 +78,11 @@ fun main(args: Array<String>) {
         }
 
         // Agent runner provider — CLI-based agent with optional Gitea integration
+        val llmProfileStore = LlmProfileStore(workflowStore::current)
         val agentRunnerProvider: (WorkflowConfig) -> AgentRunner = { config ->
             val wsManager = WorkspaceManager(config)
             val tracker = trackerProvider()
-            AgentRunner(config, wsManager, giteaClient, tracker)
+            AgentRunner(config, wsManager, giteaClient, tracker, llmProfileStore::activeProfile)
         }
 
         // Start Orchestrator
@@ -92,7 +94,7 @@ fun main(args: Array<String>) {
         var httpServer: HttpServer? = null
         if (port != null) {
             val host = workflowStore.current().serverHost
-            httpServer = HttpServer(host, port, orchestrator)
+            httpServer = HttpServer(host, port, orchestrator, llmProfileStore)
             httpServer.start()
         }
 

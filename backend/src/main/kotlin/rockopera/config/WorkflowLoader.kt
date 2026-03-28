@@ -56,6 +56,7 @@ object WorkflowLoader {
         val agentCfg = cfg.getMap("agent")
         val observability = cfg.getMap("observability")
         val server = cfg.getMap("server")
+        val llmProfilesCfg = agentCfg.getMap("llm_profiles")
 
         val kind = tracker.getString("kind") ?: "linear"
         val isGitea = kind.equals("gitea", ignoreCase = true)
@@ -67,6 +68,7 @@ object WorkflowLoader {
 
         val phases = parsePhases(cfg)
         val projects = parseProjects(tracker)
+        val llmProfiles = parseLlmProfiles(llmProfilesCfg)
 
         return WorkflowConfig(
             trackerKind = kind,
@@ -92,6 +94,8 @@ object WorkflowLoader {
                 ?: "claude -p --verbose --output-format stream-json --dangerously-skip-permissions",
             agentTurnTimeoutMs = agentCfg.getLong("turn_timeout_ms") ?: 3_600_000,
             agentStallTimeoutMs = agentCfg.getLong("stall_timeout_ms") ?: 300_000,
+            llmProfiles = llmProfiles,
+            defaultLlmProfileId = llmProfilesCfg.getString("default")?.let { resolveEnv(it) },
             phases = phases,
             dashboardEnabled = observability.getBoolean("dashboard_enabled") ?: true,
             dashboardRefreshMs = observability.getInt("refresh_ms") ?: 1_000,
@@ -152,6 +156,28 @@ object WorkflowLoader {
                 onApproved = phaseMap.getString("on_approved") ?: "done",
                 onChangesRequested = phaseMap.getString("on_changes_requested") ?: "todo",
                 labelOnStart = phaseMap.getString("label_on_start")
+            )
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun parseLlmProfiles(cfg: Map<String, Any?>): List<LlmProfileConfig> {
+        val items = cfg["items"] as? List<*> ?: return emptyList()
+        return items.mapNotNull { item ->
+            val profileMap = item as? Map<String, Any?> ?: return@mapNotNull null
+            val id = profileMap.getString("id")?.trim().orEmpty()
+            if (id.isBlank()) return@mapNotNull null
+
+            val envMap = (profileMap["env"] as? Map<String, Any?>)
+                ?.mapValues { (_, value) -> resolveEnv(value?.toString().orEmpty()) }
+                ?.filterValues { it.isNotBlank() }
+                ?: emptyMap()
+
+            LlmProfileConfig(
+                id = id,
+                label = profileMap.getString("label")?.trim().takeUnless { it.isNullOrBlank() } ?: id,
+                command = profileMap.getString("command")?.let { resolveEnv(it) }?.takeIf { it.isNotBlank() },
+                env = envMap
             )
         }
     }

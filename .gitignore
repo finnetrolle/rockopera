@@ -2,6 +2,7 @@
 backend/build/
 backend/.gradle/
 backend/log/
+/.gradle-home/
 
 # Frontend
 frontend/node_modules/

@@ -18,6 +18,29 @@ agent:
   command: "claude -p --verbose --output-format stream-json --dangerously-skip-permissions"
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
+  llm_profiles:
+    items:
+      - id: glm
+        label: GLM-5
+        env:
+          ANTHROPIC_MODEL: sonnet
+          ANTHROPIC_AUTH_TOKEN: $GLM_ANTHROPIC_AUTH_TOKEN
+          ANTHROPIC_BASE_URL: $GLM_ANTHROPIC_BASE_URL
+          ANTHROPIC_DEFAULT_SONNET_MODEL: $GLM_SONNET_MODEL
+      - id: gpt41
+        label: GPT-4.1
+        env:
+          ANTHROPIC_MODEL: sonnet
+          ANTHROPIC_AUTH_TOKEN: $LITELLM_MASTER_KEY
+          ANTHROPIC_BASE_URL: http://litellm:4000
+          ANTHROPIC_DEFAULT_SONNET_MODEL: rockopera-sonnet
+      - id: o3
+        label: o3
+        env:
+          ANTHROPIC_MODEL: opus
+          ANTHROPIC_AUTH_TOKEN: $LITELLM_MASTER_KEY
+          ANTHROPIC_BASE_URL: http://litellm:4000
+          ANTHROPIC_DEFAULT_OPUS_MODEL: rockopera-opus
 phases:
   coding:
     trigger_states: [open, todo]
